@@ -1,29 +1,23 @@
-/*
-1.Respond to HTTP & HTTPS requests,and should display eachrequest on a management console. It should forward the request to the Web server and relay the response to the browser.
-
-2.Handle websocket connections.
-
-3.Dynamically blockselected URLsvia the management console.
-
-4.Efficiently cache requestslocally and thus save bandwidth. You must gather timing and bandwidth data to prove the efficiency of your proxy.
-
-5.Handle multiple requests simultaneouslyby implementing a threaded server.
-*/
-
 // References: https://golang.org/
 
 package main
 
 import( 
+	"bufio"
+	"bytes"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"os"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
+	"regexp"
 )
 
 const (
-	defaultPort = ":8081"
+	DEFAULT_PORT = ":8081"
+	BLOCKED_WEBSITES = "blocked.ini"
 )
 
 var (
@@ -33,82 +27,99 @@ var (
 		Jar: nil,
 		Timeout: 0,
 	}
+	blockedStr string
 )
 
-//Response from server we receive after issuing a GET request to a given URL
-func genRequest(u url.URL) *http.Response{
-	//Make a GET request
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err!=nil{
-		log.Fatal(err)
-	}
-
-	listenAndForward(req)
-	
-	resp, err := client.Do(req)
+func init(){
+	//Reads in the blocked websites
+	blocked, err := ioutil.ReadFile(BLOCKED_WEBSITES)
 	if err != nil{
+		fmt.Println("Error reading blocked.ini")
 		log.Fatal(err)
 	}
-	defer resp.Body.Close()
-	
-	if resp.StatusCode == http.StatusOK{
-		fmt.Print("Response from client.Do: \n\n", resp)
-	}
-	return resp
+	blockedStr = string(blocked)
+	fmt.Println(blockedStr)		//Prints content as string
 }
 
-//TODO
-//Given a http request, this function will forward the request to the host 
-func listenAndForward(r *http.Request) {
-	host := r.URL.Host	//Host to send to
-	method := r.Method
-	browserAddr := r.RemoteAddr
-	fmt.Println("Host: ", host, "\nMethod: ", method, "\nRemoteAddr: ", browserAddr, "\n\n")
-	ip, err := net.ResolveIPAddr("tcp", browserAddr)
+//Checks if the host is blocked
+func isBlocked(u string) bool{
+	match, err := regexp.MatchString(u, blockedStr)
 	if err != nil{
-		fmt.Println("ip: ", ip)
 		log.Fatal(err)
 	}
+	if match{
+		return true
+	}
+	return false
+	
+}
+
+func listenAndForward(r *http.Request) (resp *http.Response, headerBody string){
+	//If host is on blocked list, don't query website
+	if isBlocked(r.URL.Host){
+		fmt.Println("This website has been blocked")
+		os.Exit(1)
+	}	
+	fmt.Println("Request from client is : ", r)
 	//Send the http request to the destination
 	resp, err := client.Do(r)
 	if err != nil{
+		fmt.Println("\nError getting a response\n")
 		log.Fatal(err)
 	}
+	//fmt.Println("\nResponse from host is: " , resp, "\n\nResponse body is: ", resp.Body)
 	defer resp.Body.Close()
-	responseToClient(resp, ip)
+	bodybytes, er := ioutil.ReadAll(resp.Body)
+	if er != nil{
+		log.Fatal(er)
+	}
+	//bodyString contains the response body
+	bodyString := string(bodybytes)
+	return resp, bodyString
 }
 
-//Response returned from a request is given to the browser
-func responseToClient(resp *http.Response, ip *net.IPAddr){
-	
+//Generates a http request from a byte slice of data heard on DEFAULT_PORT
+func makeHeader(byteHeader []byte) *http.Request{
+	req, err := http.ReadRequest(bufio.NewReader(io.MultiReader(bytes.NewReader(byteHeader))))
+	if err != nil{
+		log.Fatal(err)
+	}
+	//Client should not modify the RequestURI
+	req.RequestURI = ""
+	return req
 }
 
-//Need to fix main so it listens to the raw bytes that are sent to the default port
-//Using these raw bytes we will be able to infer the header (Browser will send the header after it is configured to send all data to specific port)
+func handleme(conn net.Conn){
+	buff := make([]byte, 1024)
+	msgLen, err := conn.Read(buff)
+	if err != nil{
+		log.Fatal(err)
+	}
+	fmt.Println("\n\nRequest from browser: \n",string(buff[:msgLen]))
+	req := makeHeader(buff)
+	resp, respBody := listenAndForward(req)
+	respStr := fmt.Sprintf("%v%s", resp, respBody)
+	fmt.Println(respStr)
+	//Write back on the connection
+	_, err = conn.Write([]byte(respStr))
+	if err != nil{
+		fmt.Println("Error writing connection back to browser")
+		log.Fatal(err)
+	}
+}
+
 func main() {
-	ln, err := net.Listen("tcp", defaultPort)
+	ln, err := net.Listen("tcp", DEFAULT_PORT)
 	if err != nil{
 		log.Fatal(err)
 	}
 	defer ln.Close()
-
-	tmp := make([]byte, 256)
-	buf := make([]byte, 0, 4096)
 	for{
 		conn, err := ln.Accept()
 		if err != nil{
 			log.Fatal(err)
 		}
+		go handleme(conn)
 		defer conn.Close()
-		n, err := conn.Read(buf)
-		if err != nil{
-			log.Fatal(err)
-		}
-		buf = append(buf, tmp[0:n]...)
-		fmt.Println("\nconn.RemoteAddr()\t", conn.RemoteAddr())
-		fmt.Println("n: ", n, "\nbuf: ", buf, "\n&buf", &buf, "\ntmp", tmp, "\n&tmp: ", &tmp)
-
-		er := http.Serve(ln, nil)
-		fmt.Println("er: ", er)
 	}
 }
