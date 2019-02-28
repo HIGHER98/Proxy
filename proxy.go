@@ -46,7 +46,7 @@ func listenAndForward(r *http.Request) (resp *http.Response, bodyString string){
 		return nil, "<!DOCTYPE html><html><body><h1>This website has been blocked</h1></body></html>"
 	}
 
-	//Send the request to the destination
+  //Send the request to the destination
 	resp, err := client.Do(r)
 	if err != nil{
 		fmt.Println("\nError getting a response\n")
@@ -100,20 +100,12 @@ func handler(conn net.Conn){
 	fmt.Println("\n\nRequest from client:\n",string(buff[:msgLen]))
 	req := makeHeader(buff)
 	resp, respBody := listenAndForward(req)
-	if resp == nil{
-		_, err = conn.Write([]byte(respBody))
-		if err != nil{
-			log.Fatal(err)
-    }
-  }
-	fmt.Println("Response header received: ", resp)
 
-	//Write back on the connection
 	_, err = conn.Write([]byte(respBody))
 	if err != nil{
-		fmt.Println("Error writing data back to browser")
 		log.Fatal(err)
-	}
+  }
+	fmt.Println("Response header received: ", resp)
 	defer conn.Close()
 }
 
