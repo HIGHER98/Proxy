@@ -8,7 +8,6 @@ import(
 	"fmt"
 	"io"
 	"io/ioutil"
-	"os"
 	"log"
 	"net"
 	"net/http"
@@ -38,7 +37,30 @@ func init(){
 		log.Fatal(err)
 	}
 	blockedStr = string(blocked)
-	fmt.Println(blockedStr)		//Prints content as string
+	fmt.Println("Blocked websites:\n", blockedStr)		//Prints content as string
+}
+
+func listenAndForward(r *http.Request) (resp *http.Response, bodyString string){
+	//If host is on blocked list, don't query website, instead return blocked message
+	if isBlocked(r.URL.Host){
+		return nil, "<!DOCTYPE html><html><body><h1>This website has been blocked</h1></body></html>"
+	}
+
+	//Send the request to the destination
+	resp, err := client.Do(r)
+	if err != nil{
+		fmt.Println("\nError getting a response\n")
+		log.Fatal(err)
+	}
+	
+	defer resp.Body.Close()
+	bodybytes, er := ioutil.ReadAll(resp.Body)
+	if er != nil{
+		log.Fatal(er)
+	}
+	//bodyString contains the response body
+	bodyString = string(bodybytes)	
+	return resp, bodyString
 }
 
 //Checks if the host is blocked
@@ -51,62 +73,50 @@ func isBlocked(u string) bool{
 		return true
 	}
 	return false
-	
-}
-
-func listenAndForward(r *http.Request) (resp *http.Response, headerBody string){
-	//If host is on blocked list, don't query website
-	if isBlocked(r.URL.Host){
-		fmt.Println("This website has been blocked")
-		os.Exit(1)
-	}	
-	fmt.Println("Request from client is : ", r)
-	//Send the http request to the destination
-	resp, err := client.Do(r)
-	if err != nil{
-		fmt.Println("\nError getting a response\n")
-		log.Fatal(err)
-	}
-	//fmt.Println("\nResponse from host is: " , resp, "\n\nResponse body is: ", resp.Body)
-	defer resp.Body.Close()
-	bodybytes, er := ioutil.ReadAll(resp.Body)
-	if er != nil{
-		log.Fatal(er)
-	}
-	//bodyString contains the response body
-	bodyString := string(bodybytes)
-	return resp, bodyString
 }
 
 //Generates a http request from a byte slice of data heard on DEFAULT_PORT
 func makeHeader(byteHeader []byte) *http.Request{
+	//The below line reads the request but fills in fields for server to parse
+	//As a result of this, if req is sent as a request to the host it does not return the correct response
 	req, err := http.ReadRequest(bufio.NewReader(io.MultiReader(bytes.NewReader(byteHeader))))
 	if err != nil{
 		log.Fatal(err)
 	}
-	//Client should not modify the RequestURI
-	req.RequestURI = ""
-	return req
+	//Send request
+	request, err := http.NewRequest(req.Method, req.URL.String(), req.Body)
+	if err!= nil{
+		log.Fatal(err)
+	}
+	return request
 }
 
-func handleme(conn net.Conn){
+func handler(conn net.Conn){
 	buff := make([]byte, 1024)
 	msgLen, err := conn.Read(buff)
 	if err != nil{
 		log.Fatal(err)
 	}
-	fmt.Println("\n\nRequest from browser: \n",string(buff[:msgLen]))
+	fmt.Println("\n\nRequest from client:\n",string(buff[:msgLen]))
 	req := makeHeader(buff)
 	resp, respBody := listenAndForward(req)
-	respStr := fmt.Sprintf("%v%s", resp, respBody)
-	fmt.Println(respStr)
+	if resp == nil{
+		_, err = conn.Write([]byte(respBody))
+		if err != nil{
+			log.Fatal(err)
+    }
+  }
+	fmt.Println("Response header received: ", resp)
+
 	//Write back on the connection
-	_, err = conn.Write([]byte(respStr))
+	_, err = conn.Write([]byte(respBody))
 	if err != nil{
-		fmt.Println("Error writing connection back to browser")
+		fmt.Println("Error writing data back to browser")
 		log.Fatal(err)
 	}
+	defer conn.Close()
 }
+
 
 func main() {
 	ln, err := net.Listen("tcp", DEFAULT_PORT)
@@ -119,7 +129,6 @@ func main() {
 		if err != nil{
 			log.Fatal(err)
 		}
-		go handleme(conn)
-		defer conn.Close()
+		go handler(conn)
 	}
 }
