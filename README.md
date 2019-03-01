@@ -1,5 +1,7 @@
 # Proxy
-A http(s) proxy in golang
+A http proxy in golang. Not currently working for HTTPs but stay tuned...
+
+
 
 Specification:
 
